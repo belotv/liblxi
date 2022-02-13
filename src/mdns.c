@@ -235,7 +235,7 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
     mdns_string_t entrystr =
     mdns_string_extract(data, size, &name_offset, entrybuffer, sizeof(entrybuffer));
     //printf("PTR = %s\n", (MDNS_STRING_FORMAT(entrystr)));
-    if ((rtype == MDNS_RECORDTYPE_PTR) && (entry == MDNS_ENTRYTYPE_ANSWER)) {
+  if ((rtype == MDNS_RECORDTYPE_PTR) && (entry == MDNS_ENTRYTYPE_ANSWER)) {
         //printf("PTR received on socket %d\n", sock);
         mdns_string_t namestr = mdns_record_parse_ptr(data, size, record_offset, record_length,
                                                       namebuffer, sizeof(namebuffer));
@@ -250,11 +250,23 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
                 //char ipbuf[2048];
                 //printf("Found service on IP:%s\n", (MDNS_STRING_FORMAT(ip_address_to_string(ipbuf, 2048, from, addrlen))));
                 // A service was found
-                strncpy(lxistore->services[lxistore->service_count].service_type, namebuffer, strlen(namebuffer));
+                char* service_type;
+                if (strstr((MDNS_STRING_FORMAT(namestr)), "_lxi._tcp") != NULL)
+                    service_type = "_lxi._tcp";
+                else if (strstr((MDNS_STRING_FORMAT(namestr)), "_vxi-11._tcp") != NULL)
+                    service_type = "_vxi-11._tcp";
+                else if (strstr((MDNS_STRING_FORMAT(namestr)), "_scpi-raw._tcp") != NULL)
+                    service_type = "_scpi-raw._tcp";
+                else if (strstr((MDNS_STRING_FORMAT(namestr)), "_scpi-telnet._tcp") != NULL)
+                    service_type = "_scpi-telnet._tcp";
+                else if (strstr((MDNS_STRING_FORMAT(namestr)), "_hislip._tcp") != NULL)
+                    service_type = "_hislip._tcp";
+                    
+                strncpy(lxistore->services[lxistore->service_count].service_type, service_type, strlen(service_type));
                 lxistore->services[lxistore->service_count].addr = malloc(sizeof(const struct sockaddr));
                 memcpy(lxistore->services[lxistore->service_count].addr, from, sizeof(const struct sockaddr));
                 lxistore->services[lxistore->service_count].addrlen = addrlen;
-                lxistore->services[lxistore->service_count].service_type[strlen(namebuffer)] = '\0';
+                lxistore->services[lxistore->service_count].service_type[strlen(service_type)] = '\0';
                 lxistore->services[lxistore->service_count].service_port = 0;
                 lxistore->services[lxistore->service_count].device_name[0] = '\0';
                 lxistore->services[lxistore->service_count].fully_discovered = -1;
@@ -271,7 +283,7 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
                 get_service_info(qry_sock, namestr, lxistore, lxistore->service_count);            }
             else if (strstr((MDNS_STRING_FORMAT(entrystr)), "_services") == NULL) {
                 strncpy(lxistore->services[service_id].device_name, (MDNS_STRING_FORMAT(namestr)), strlen((MDNS_STRING_FORMAT(namestr))));
-                lxistore->services[service_id].device_name[strlen((MDNS_STRING_FORMAT(namestr)))-strlen(lxistore->services[service_id].service_type)-1] = '\0';
+                lxistore->services[service_id].device_name[strlen((MDNS_STRING_FORMAT(namestr)))] = '\0';
             }
         }
         
