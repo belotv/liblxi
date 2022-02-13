@@ -79,6 +79,8 @@ static char rpc_GETPORT_msg[] =
     0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00
 };
 
+#ifdef __APPLE__
+
 struct args {
     int joined;
     pthread_t td;
@@ -124,6 +126,8 @@ int pthread_timedjoin_np(pthread_t td, void **res, struct timespec *ts)
 
     return args.joined ? 0 : ret;
 }
+
+#endif
 
 static int _vxi11_connect(void *data, const char *address, int port, const char *name, int timeout)
 {
