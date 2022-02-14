@@ -24,7 +24,7 @@
 #include <net/if.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
-#include "mdns.h"
+#include "mdns_wrapper.h"
 #include "lxi.h"
 #include "error.h"
 
@@ -246,9 +246,10 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
             || (strstr((MDNS_STRING_FORMAT(namestr)), "_hislip._tcp") != NULL)){
             int service_id = get_service_id(lxistore, from, namestr);
             //printf("Service ID:%d\n",service_id);
+
             if (service_id < 0){
-                //char ipbuf[2048];
-                //printf("Found service on IP:%s\n", (MDNS_STRING_FORMAT(ip_address_to_string(ipbuf, 2048, from, addrlen))));
+                char ipbuf[2048];
+                printf("Found service on IP:%s from sock %d\n", (MDNS_STRING_FORMAT(ip_address_to_string(ipbuf, 2048, from, addrlen))), sock);
                 // A service was found
                 char* service_type;
                 if (strstr((MDNS_STRING_FORMAT(namestr)), "_lxi._tcp") != NULL)
@@ -291,24 +292,12 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
     else if (rtype == MDNS_RECORDTYPE_SRV && lxistore->service_count) {
         // Receive SRV record - parse to get some service information
         mdns_record_srv_t srv = mdns_record_parse_srv(data, size, record_offset, record_length, namebuffer, sizeof(namebuffer));
-        
-        int i = 0;
-        do {
-            if (lxistore->services[i].addr->sa_family == AF_INET
-                && (((const struct sockaddr_in*)from)->sin_addr.s_addr == ((const struct sockaddr_in*)lxistore->services[i].addr)->sin_addr.s_addr)
-                && (str_in_data(data, lxistore->services[i].service_type, size) == 0))
-                break;
-            if (lxistore->services[i].addr->sa_family == AF_INET6
-                && (0 == memcmp(((const struct sockaddr_in6*)from)->sin6_addr.s6_addr,((const struct sockaddr_in6*)lxistore->services[i].addr)->sin6_addr.s6_addr, sizeof(((const struct sockaddr_in6*)from)->sin6_addr)))
-                && (str_in_data(data, lxistore->services[i].service_type, size) == 0))
-                break;
-            i++;
-        } while (i < lxistore->service_count);
-        
+        int service_id = get_service_id(lxistore, from, entrystr);
+    
         // SRV matches with a service found previously, store name
-        if (i < lxistore->service_count){
-            lxistore->services[i].service_port=srv.port;
-            lxistore->services[i].fully_discovered = 1;
+        if (service_id >= 0){
+            lxistore->services[service_id].service_port=srv.port;
+            lxistore->services[service_id].fully_discovered = 1;
         };
     }
     return 0;
@@ -453,7 +442,7 @@ open_client_sockets(int* sockets, int* listening_sockets, int max_sockets, int p
     
     if (getifaddrs(&ifaddr) < 0)
         error_printf("Unable to get interface addresses\n");
-    
+
     int first_ipv4 = 1;
     int first_ipv6 = 1;
     for (ifa = ifaddr; ifa; ifa = ifa->ifa_next) {
@@ -476,12 +465,12 @@ open_client_sockets(int* sockets, int* listening_sockets, int max_sockets, int p
                 has_ipv4 = 1;
                 if (num_sockets < max_sockets) {
                     saddr->sin_port = htons(port);
-                    int sock = mdns_socket_open_ipv4(saddr);
+                    int sock = mdns_socket_open_ipv4(saddr, ifa->ifa_name);
                     if (sock >= 0) {
                         sockets[num_sockets] = sock;
                         // For each opened socket, also open a listening socket on 5353 as response may not come to the querying port
                         saddr->sin_port = htons(MDNS_PORT);
-                        int lsock = mdns_socket_open_ipv4(saddr);
+                        int lsock = mdns_socket_open_ipv4(saddr, ifa->ifa_name);
                         if (lsock >= 0) {
                             listening_sockets[num_sockets++] = lsock;
                             log_addr = 1;
@@ -651,6 +640,10 @@ send_dns_sd(lxi_store_t lxistore, int timeout_user){
         else if (strstr(lxistore.services[i].service_type, "_hislip._tcp") != NULL)
             service_type = "hislip";
         char ipbuf[256];
+        char* str_name_end = strstr(lxistore.services[i].device_name, lxistore.services[i].service_type);
+        if (str_name_end != NULL){
+            lxistore.services[i].device_name[strlen(lxistore.services[i].device_name)-strlen(str_name_end) - 1] = 0;
+        }
         ip_address_to_string(ipbuf, 256, lxistore.services[i].addr, lxistore.services[i].addrlen);
         lxistore.info->service(ipbuf, lxistore.services[i].device_name, service_type, lxistore.services[i].service_port);
     }
