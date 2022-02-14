@@ -24,7 +24,7 @@
 #include <net/if.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
-#include "mdns_wrapper.h"
+#include "mdns.h"
 #include "lxi.h"
 #include "error.h"
 
