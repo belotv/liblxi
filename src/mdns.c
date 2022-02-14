@@ -374,9 +374,9 @@ open_client_sockets(int* sockets, int* listening_sockets, int max_sockets, int p
                         if (sock >= 0) {
                             sockets[num_sockets] = sock;
                             // For each opened socket, also open a listening socket on 5353 as response may not come to the querying port
+                            saddr->sin_port = htons(MDNS_PORT);
                             int lsock = mdns_socket_open_ipv4(saddr);
                             if (lsock >= 0) {
-                                saddr->sin_port = htons(MDNS_PORT);
                                 listening_sockets[num_sockets++] = lsock;
                                 log_addr = 1;
                             } else {
@@ -419,9 +419,9 @@ open_client_sockets(int* sockets, int* listening_sockets, int max_sockets, int p
                         if (sock >= 0) {
                             sockets[num_sockets] = sock;
                             // For each opened socket, also open a listening socket on 5353 as response may not come to the querying port
+                            saddr->sin6_port = htons(MDNS_PORT);
                             int lsock = mdns_socket_open_ipv6(saddr);
                             if (lsock >= 0) {
-                                saddr->sin6_port = htons(MDNS_PORT);
                                 listening_sockets[num_sockets++] = lsock;
                                 log_addr = 1;
                             } else {
@@ -480,9 +480,9 @@ open_client_sockets(int* sockets, int* listening_sockets, int max_sockets, int p
                     if (sock >= 0) {
                         sockets[num_sockets] = sock;
                         // For each opened socket, also open a listening socket on 5353 as response may not come to the querying port
+                        saddr->sin_port = htons(MDNS_PORT);
                         int lsock = mdns_socket_open_ipv4(saddr);
                         if (lsock >= 0) {
-                            saddr->sin_port = htons(MDNS_PORT);
                             listening_sockets[num_sockets++] = lsock;
                             log_addr = 1;
                         } else {
@@ -524,9 +524,9 @@ open_client_sockets(int* sockets, int* listening_sockets, int max_sockets, int p
                     if (sock >= 0) {
                         sockets[num_sockets] = sock;
                         // For each opened socket, also open a listening socket on 5353 as response may not come to the querying port
+                        saddr->sin6_port = htons(MDNS_PORT);
                         int lsock = mdns_socket_open_ipv6(saddr);
                         if (lsock >= 0) {
-                            saddr->sin6_port = htons(MDNS_PORT);
                             listening_sockets[num_sockets++] = lsock;
                             log_addr = 1;
                         } else {
