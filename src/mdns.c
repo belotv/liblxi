@@ -185,7 +185,7 @@ get_service_info(int sock, const char* qry_str, int type, lxi_store_t* lxistore,
     size_t internal_capacity = 2048;
     void* internal_buffer = malloc(internal_capacity);
     mdns_query_t query[1];
-    int query_ptr_info_id;
+    int query_id;
     int res;
     
     // Prepare the query
@@ -195,18 +195,22 @@ get_service_info(int sock, const char* qry_str, int type, lxi_store_t* lxistore,
     
     // Do not use the socket bound to MDNS_PORT to query - use the other socket on the same interface
     int qry_sock = sock;
+    int lst_sock = sock;
+
     for (int i = 0; i < MAX_SOCKETS; i++){
-        if (lxistore->listening_sockets[i] == sock){
+        if ((lxistore->listening_sockets[i] == sock) || (lxistore->sockets[i] == sock)){
             qry_sock = lxistore->sockets[i];
-            sock = MAX(lxistore->listening_sockets[i],lxistore->sockets[i]);
+            lst_sock = lxistore->listening_sockets[i];
             break;
         }
     }
     
-    query_ptr_info_id = mdns_multiquery_send(qry_sock, query, 1, internal_buffer, internal_capacity, 0);
-    if (query_ptr_info_id < 0)
+    query_id = mdns_multiquery_send(qry_sock, query, 1, internal_buffer, internal_capacity, 0);
+    if (query_id < 0)
         error_printf("Failed to send mDNS query: %s\n", strerror(errno));
     
+    sock = MAX(qry_sock, lst_sock);
+
     int initial_discovery_step = lxistore->services[service_id].discovery_step;
     do {
         struct timeval timeout;
@@ -216,12 +220,13 @@ get_service_info(int sock, const char* qry_str, int type, lxi_store_t* lxistore,
         
         fd_set readfs;
         FD_ZERO(&readfs);
-        FD_SET(sock, &readfs);
+        FD_SET(qry_sock, &readfs);
+        FD_SET(lst_sock, &readfs);
         
         res = select(sock+1, &readfs, 0, 0, &timeout);
-        if (res > 0 && FD_ISSET(sock, &readfs) && FD_ISSET(qry_sock, &readfs)){
-            mdns_query_recv(qry_sock, internal_buffer, internal_capacity, query_callback, lxistore, query_ptr_info_id);
-            mdns_query_recv(sock, internal_buffer, internal_capacity, query_callback, lxistore, query_ptr_info_id);
+        if (res > 0 && FD_ISSET(qry_sock, &readfs) && FD_ISSET(lst_sock, &readfs)){
+            mdns_query_recv(qry_sock, internal_buffer, internal_capacity, query_callback, lxistore, query_id);
+            mdns_query_recv(lst_sock, internal_buffer, internal_capacity, query_callback, lxistore, query_id);
         }
     } while (res > 0 && (lxistore->services[service_id].discovery_step < initial_discovery_step));
     if (res == 0){
