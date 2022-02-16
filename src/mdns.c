@@ -219,7 +219,8 @@ get_service_info(int sock, const char* qry_str, int type, lxi_store_t* lxistore,
         FD_SET(sock, &readfs);
         
         res = select(sock+1, &readfs, 0, 0, &timeout);
-        if (res > 0 && FD_ISSET(sock, &readfs)){
+        if (res > 0 && FD_ISSET(sock, &readfs) && FD_ISSET(qry_sock, &readfs)){
+            mdns_query_recv(qry_sock, internal_buffer, internal_capacity, query_callback, lxistore, query_ptr_info_id);
             mdns_query_recv(sock, internal_buffer, internal_capacity, query_callback, lxistore, query_ptr_info_id);
         }
     } while (res > 0 && (lxistore->services[service_id].discovery_step < initial_discovery_step));
