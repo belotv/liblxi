@@ -27,6 +27,7 @@
 #include "mdns.h"
 #include "lxi.h"
 #include "error.h"
+#include "sys/param.h"
 
 static char entrybuffer[256];
 static char namebuffer[256];
@@ -44,13 +45,14 @@ typedef struct {
     char device_name[256];
     char service_type[256];
     int service_port;
-    int fully_discovered;
+    int discovery_step;
 } service_info_t;
 
 typedef struct {
     lxi_info_t* info;
     service_info_t services[MAX_SRV_COUNT];
     int service_count;
+    int response_received;
     int* sockets;
     int* listening_sockets;
 } lxi_store_t;
@@ -191,10 +193,21 @@ get_service_info(int sock, const char* qry_str, int type, lxi_store_t* lxistore,
     query[0].type = type;
     query[0].length = strlen(query[0].name);
     
-    query_ptr_info_id = mdns_multiquery_send(sock, query, 1, internal_buffer, internal_capacity, 0);
+    // Do not use the socket bound to MDNS_PORT to query - use the other socket on the same interface
+    int qry_sock = sock;
+    for (int i = 0; i < MAX_SOCKETS; i++){
+        if (lxistore->listening_sockets[i] == sock){
+            qry_sock = lxistore->sockets[i];
+            sock = MAX(lxistore->listening_sockets[i],lxistore->sockets[i]);
+            break;
+        }
+    }
+    
+    query_ptr_info_id = mdns_multiquery_send(qry_sock, query, 1, internal_buffer, internal_capacity, 0);
     if (query_ptr_info_id < 0)
         error_printf("Failed to send mDNS query: %s\n", strerror(errno));
     
+    int initial_discovery_step = lxistore->services[service_id].discovery_step;
     do {
         struct timeval timeout;
         // This timeout only applies to subqueries
@@ -209,7 +222,10 @@ get_service_info(int sock, const char* qry_str, int type, lxi_store_t* lxistore,
         if (res > 0 && FD_ISSET(sock, &readfs)){
             mdns_query_recv(sock, internal_buffer, internal_capacity, query_callback, lxistore, query_ptr_info_id);
         }
-    } while (res > 0 && (lxistore->services[service_id].fully_discovered < 0));
+    } while (res > 0 && (lxistore->services[service_id].discovery_step < initial_discovery_step));
+    if (res == 0){
+        error_printf("Timeout while retrieving service information\n");
+    }
     
     free(internal_buffer);
     return 0;
@@ -279,36 +295,20 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
                 lxistore->services[lxistore->service_count].service_type[strlen(service_type)] = '\0';
                 lxistore->services[lxistore->service_count].service_port = 0;
                 lxistore->services[lxistore->service_count].device_name[0] = '\0';
-                lxistore->services[lxistore->service_count].fully_discovered = -1;
+                lxistore->services[lxistore->service_count].discovery_step = 0;
                 lxistore->service_count++;
                 
-                // Do not use the socket bound to MDNS_PORT to query - use the other socket on the same interface
-                int qry_sock = sock;
-                for (int i = 0; i < MAX_SOCKETS; i++){
-                    if (lxistore->listening_sockets[i] == sock){
-                        qry_sock = lxistore->sockets[i];
-                        break;
-                    }
-                }
-                get_service_info(qry_sock, (MDNS_STRING_FORMAT(namestr)), MDNS_RECORDTYPE_PTR, lxistore, lxistore->service_count);
+                get_service_info(sock, (MDNS_STRING_FORMAT(namestr)), MDNS_RECORDTYPE_PTR, lxistore, lxistore->service_count - 1);
             }
-            else if (strstr((MDNS_STRING_FORMAT(entrystr)), "_services") == NULL) {
+            else if (strstr((MDNS_STRING_FORMAT(entrystr)), "_services") == NULL && (lxistore->services[service_id].discovery_step == 0)) {
                 
                 // PTR received with the device name
                 strncpy(lxistore->services[service_id].device_name, (MDNS_STRING_FORMAT(namestr)), strlen((MDNS_STRING_FORMAT(namestr))));
                 lxistore->services[service_id].device_name[strlen((MDNS_STRING_FORMAT(namestr)))] = '\0';
-                
-                // Do not use the socket bound to MDNS_PORT to query - use the other socket on the same interface
-                int qry_sock = sock;
-                for (int i = 0; i < MAX_SOCKETS; i++){
-                    if (lxistore->listening_sockets[i] == sock){
-                        qry_sock = lxistore->sockets[i];
-                        break;
-                    }
-                }
+                lxistore->services[service_id].discovery_step = 1;
                 
                 // Request for service information
-                get_service_info(qry_sock, lxistore->services[service_id].device_name, MDNS_RECORDTYPE_SRV, lxistore, lxistore->service_count);
+                get_service_info(sock, lxistore->services[service_id].device_name, MDNS_RECORDTYPE_SRV, lxistore, service_id);
             }
         }
         
@@ -319,9 +319,9 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
         int service_id = get_service_id(lxistore, from, entrystr);
     
         // SRV matches with a service found previously, service is now fully discovered
-        if (service_id >= 0 && (lxistore->services[service_id].fully_discovered == -1)){
+        if (service_id >= 0 && (lxistore->services[service_id].discovery_step == 1)){
             lxistore->services[service_id].service_port=srv.port;
-            lxistore->services[service_id].fully_discovered = 1;
+            lxistore->services[service_id].discovery_step = 2;
             finalize_service(lxistore, service_id);
         };
     }
