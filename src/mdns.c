@@ -85,9 +85,6 @@ ipv4_address_to_string(char* buffer, size_t capacity, const struct sockaddr_in* 
                           service, NI_MAXSERV, NI_NUMERICSERV | NI_NUMERICHOST);
     int len = 0;
     if (ret == 0) {
-        //        if (addr->sin_port != 0)
-        //            len = snprintf(buffer, capacity, "%s:%s", host, service);
-        //        else
         len = snprintf(buffer, capacity, "%s", host);
     }
     if (len >= (int)capacity)
@@ -107,9 +104,6 @@ ipv6_address_to_string(char* buffer, size_t capacity, const struct sockaddr_in6*
                           service, NI_MAXSERV, NI_NUMERICSERV | NI_NUMERICHOST);
     int len = 0;
     if (ret == 0) {
-        //        if (addr->sin6_port != 0)
-        //            len = snprintf(buffer, capacity, "[%s]:%s", host, service);
-        //        else
         len = snprintf(buffer, capacity, "%s", host);
     }
     if (len >= (int)capacity)
@@ -127,28 +121,14 @@ ip_address_to_string(char* buffer, size_t capacity, const struct sockaddr* addr,
     return ipv4_address_to_string(buffer, capacity, (const struct sockaddr_in*)addr, addrlen);
 }
 
-static int
-port_to_int(const struct sockaddr* addr) {
-    if (addr->sa_family == AF_INET6){
-        if (((const struct sockaddr_in6*)addr)->sin6_port != 0)
-            return htons(((const struct sockaddr_in6*)addr)->sin6_port);
-        else
-            return 0;
-    }
-    if (((const struct sockaddr_in*)addr)->sin_port != 0)
-        return htons(((const struct sockaddr_in*)addr)->sin_port);
-    return 0;
-}
-
 static inline size_t
 str_in_data(const char* data, char* s_to_search, size_t data_len) {
     int pos_search = 0;
     int pos_text = 0;
-    int len_search = strlen(s_to_search)-1;
+    int len_search = (int)strlen(s_to_search) - 1;
     for (pos_text = 0; pos_text < data_len;++pos_text)
     {
-        // Ignore '.', as it is encoded differently in the response data
-        if((data[pos_text] == s_to_search[pos_search]) || (s_to_search[pos_search] == '.'))
+        if((data[pos_text] == s_to_search[pos_search]))
         {
             ++pos_search;
             if(pos_search == len_search)
@@ -167,9 +147,39 @@ str_in_data(const char* data, char* s_to_search, size_t data_len) {
     return -1;
 }
 
-// Query service to obtain PTR (and SRV if available)
-static int get_service_info(int sock, mdns_string_t namestr, lxi_store_t* lxistore, int service_idx){
-    //printf("Info requested on sock %d.\n", sock);
+static void
+finalize_service(lxi_store_t* lxistore, int service_id){
+    char* service_type = "Unknown";
+    if (strstr(lxistore->services[service_id].service_type, "_lxi._tcp") != NULL)
+        service_type = "lxi";
+    else if (strstr(lxistore->services[service_id].service_type, "_vxi-11._tcp") != NULL)
+        service_type = "vxi-11";
+    else if (strstr(lxistore->services[service_id].service_type, "_scpi-raw._tcp") != NULL)
+        service_type = "scpi-raw";
+    else if (strstr(lxistore->services[service_id].service_type, "_scpi-telnet._tcp") != NULL)
+        service_type = "scpi-telnet";
+    else if (strstr(lxistore->services[service_id].service_type, "_hislip._tcp") != NULL)
+        service_type = "hislip";
+    
+    // Remove domain and type from device name
+    char* str_name_end = strstr(lxistore->services[service_id].device_name, lxistore->services[service_id].service_type);
+    if (str_name_end != NULL){
+        lxistore->services[service_id].device_name[strlen(lxistore->services[service_id].device_name)-strlen(str_name_end) - 1] = '\0';
+    }
+    
+    char ipbuf[INET6_ADDRSTRLEN];
+    ip_address_to_string(ipbuf, INET6_ADDRSTRLEN, lxistore->services[service_id].addr, lxistore->services[service_id].addrlen);
+    
+    // Pass to callback
+    lxistore->info->service(ipbuf, lxistore->services[service_id].device_name, service_type, lxistore->services[service_id].service_port);
+    
+    // Free the address that was allocated through malloc
+    free((void *)lxistore->services[service_id].addr);
+}
+
+static int
+get_service_info(int sock, const char* qry_str, int type, lxi_store_t* lxistore, int service_id){
+
     size_t internal_capacity = 2048;
     void* internal_buffer = malloc(internal_capacity);
     mdns_query_t query[1];
@@ -177,8 +187,8 @@ static int get_service_info(int sock, mdns_string_t namestr, lxi_store_t* lxisto
     int res;
     
     // Prepare the query
-    query[0].name = (MDNS_STRING_FORMAT(namestr));
-    query[0].type = MDNS_RECORDTYPE_PTR;
+    query[0].name = qry_str;
+    query[0].type = type;
     query[0].length = strlen(query[0].name);
     
     query_ptr_info_id = mdns_multiquery_send(sock, query, 1, internal_buffer, internal_capacity, 0);
@@ -187,6 +197,7 @@ static int get_service_info(int sock, mdns_string_t namestr, lxi_store_t* lxisto
     
     do {
         struct timeval timeout;
+        // This timeout only applies to subqueries
         timeout.tv_sec = 2;
         timeout.tv_usec = 0;
         
@@ -198,7 +209,7 @@ static int get_service_info(int sock, mdns_string_t namestr, lxi_store_t* lxisto
         if (res > 0 && FD_ISSET(sock, &readfs)){
             mdns_query_recv(sock, internal_buffer, internal_capacity, query_callback, lxistore, query_ptr_info_id);
         }
-    } while (res > 0 && lxistore->services[service_idx].fully_discovered < 0);
+    } while (res > 0 && (lxistore->services[service_id].fully_discovered < 0));
     
     free(internal_buffer);
     return 0;
@@ -232,24 +243,21 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
     
     // Always reset namebuffer else string will contain content from the previous callback if shorter
     memset(namebuffer, 0, sizeof(namebuffer));
-    mdns_string_t entrystr =
-    mdns_string_extract(data, size, &name_offset, entrybuffer, sizeof(entrybuffer));
-    //printf("PTR = %s\n", (MDNS_STRING_FORMAT(entrystr)));
-  if ((rtype == MDNS_RECORDTYPE_PTR) && (entry == MDNS_ENTRYTYPE_ANSWER)) {
-        //printf("PTR received on socket %d\n", sock);
+    
+    mdns_string_t entrystr = mdns_string_extract(data, size, &name_offset, entrybuffer, sizeof(entrybuffer));
+
+    if ((rtype == MDNS_RECORDTYPE_PTR) && (entry == MDNS_ENTRYTYPE_ANSWER)) {
         mdns_string_t namestr = mdns_record_parse_ptr(data, size, record_offset, record_length,
                                                       namebuffer, sizeof(namebuffer));
+      
         if ((strstr((MDNS_STRING_FORMAT(namestr)), "_lxi._tcp") != NULL)
             || (strstr((MDNS_STRING_FORMAT(namestr)), "_vxi-11._tcp") != NULL)
             || (strstr((MDNS_STRING_FORMAT(namestr)), "_scpi-raw._tcp") != NULL)
             || (strstr((MDNS_STRING_FORMAT(namestr)), "_scpi-telnet._tcp") != NULL)
             || (strstr((MDNS_STRING_FORMAT(namestr)), "_hislip._tcp") != NULL)){
+            
             int service_id = get_service_id(lxistore, from, namestr);
-            //printf("Service ID:%d\n",service_id);
-
             if (service_id < 0){
-                char ipbuf[2048];
-                printf("Found service on IP:%s from sock %d\n", (MDNS_STRING_FORMAT(ip_address_to_string(ipbuf, 2048, from, addrlen))), sock);
                 // A service was found
                 char* service_type;
                 if (strstr((MDNS_STRING_FORMAT(namestr)), "_lxi._tcp") != NULL)
@@ -262,10 +270,11 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
                     service_type = "_scpi-telnet._tcp";
                 else if (strstr((MDNS_STRING_FORMAT(namestr)), "_hislip._tcp") != NULL)
                     service_type = "_hislip._tcp";
-                    
+                
+                // Store service in LXI store
                 strncpy(lxistore->services[lxistore->service_count].service_type, service_type, strlen(service_type));
                 lxistore->services[lxistore->service_count].addr = malloc(sizeof(const struct sockaddr));
-                memcpy(lxistore->services[lxistore->service_count].addr, from, sizeof(const struct sockaddr));
+                memcpy((void *)lxistore->services[lxistore->service_count].addr, (void *)from, sizeof(const struct sockaddr));
                 lxistore->services[lxistore->service_count].addrlen = addrlen;
                 lxistore->services[lxistore->service_count].service_type[strlen(service_type)] = '\0';
                 lxistore->services[lxistore->service_count].service_port = 0;
@@ -281,10 +290,25 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
                         break;
                     }
                 }
-                get_service_info(qry_sock, namestr, lxistore, lxistore->service_count);            }
+                get_service_info(qry_sock, (MDNS_STRING_FORMAT(namestr)), MDNS_RECORDTYPE_PTR, lxistore, lxistore->service_count);
+            }
             else if (strstr((MDNS_STRING_FORMAT(entrystr)), "_services") == NULL) {
+                
+                // PTR received with the device name
                 strncpy(lxistore->services[service_id].device_name, (MDNS_STRING_FORMAT(namestr)), strlen((MDNS_STRING_FORMAT(namestr))));
                 lxistore->services[service_id].device_name[strlen((MDNS_STRING_FORMAT(namestr)))] = '\0';
+                
+                // Do not use the socket bound to MDNS_PORT to query - use the other socket on the same interface
+                int qry_sock = sock;
+                for (int i = 0; i < MAX_SOCKETS; i++){
+                    if (lxistore->listening_sockets[i] == sock){
+                        qry_sock = lxistore->sockets[i];
+                        break;
+                    }
+                }
+                
+                // Request for service information
+                get_service_info(qry_sock, lxistore->services[service_id].device_name, MDNS_RECORDTYPE_SRV, lxistore, lxistore->service_count);
             }
         }
         
@@ -294,12 +318,14 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
         mdns_record_srv_t srv = mdns_record_parse_srv(data, size, record_offset, record_length, namebuffer, sizeof(namebuffer));
         int service_id = get_service_id(lxistore, from, entrystr);
     
-        // SRV matches with a service found previously, store name
-        if (service_id >= 0){
+        // SRV matches with a service found previously, service is now fully discovered
+        if (service_id >= 0 && (lxistore->services[service_id].fully_discovered == -1)){
             lxistore->services[service_id].service_port=srv.port;
             lxistore->services[service_id].fully_discovered = 1;
+            finalize_service(lxistore, service_id);
         };
     }
+    
     return 0;
 }
 
@@ -379,15 +405,14 @@ open_client_sockets(int* sockets, int* listening_sockets, int max_sockets, int p
                         // Notify current broadcast address and network interface via callback
                         if (info->broadcast != NULL){
                             info->broadcast(inet_ntoa(saddr->sin_addr), adapter->FriendlyName);
-                            printf("Sock %d - Listening on sock %d\n", sockets[num_sockets], listening_sockets[num_sockets]);
                         }
                     }
                 }
             } else if (unicast->Address.lpSockaddr->sa_family == AF_INET6) {
                 struct sockaddr_in6* saddr = (struct sockaddr_in6*)unicast->Address.lpSockaddr;
                 // Ignore link-local addresses
-                if (saddr->sin6_scope_id)
-                    continue;
+                //if (saddr->sin6_scope_id)
+                //    continue;
                 static const unsigned char localhost[] = {0, 0, 0, 0, 0, 0, 0, 0,
                     0, 0, 0, 0, 0, 0, 0, 1};
                 static const unsigned char localhost_mapped[] = {0, 0, 0,    0,    0,    0, 0, 0,
@@ -485,15 +510,14 @@ open_client_sockets(int* sockets, int* listening_sockets, int max_sockets, int p
                     // Notify current broadcast address and network interface via callback
                     if (info->broadcast != NULL){
                         info->broadcast(inet_ntoa(saddr->sin_addr), ifa->ifa_name);
-                        //printf("Sock %d - Listening on sock %d\n", sockets[num_sockets-1], listening_sockets[num_sockets-1]);
                     }
                 }
             }
         } else if (ifa->ifa_addr->sa_family == AF_INET6) {
             struct sockaddr_in6* saddr = (struct sockaddr_in6*)ifa->ifa_addr;
             // Ignore link-local addresses
-            if (saddr->sin6_scope_id)
-                continue;
+            //if (saddr->sin6_scope_id)
+            //    continue;
             static const unsigned char localhost[] = {0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 0, 0, 0, 0, 1};
             static const unsigned char localhost_mapped[] = {0, 0, 0,    0,    0,    0, 0, 0,
@@ -509,12 +533,12 @@ open_client_sockets(int* sockets, int* listening_sockets, int max_sockets, int p
                 has_ipv6 = 1;
                 if (num_sockets < max_sockets) {
                     saddr->sin6_port = htons(port);
-                    int sock = mdns_socket_open_ipv6(saddr);
+                    int sock = mdns_socket_open_ipv6(saddr, ifa->ifa_name);
                     if (sock >= 0) {
                         sockets[num_sockets] = sock;
                         // For each opened socket, also open a listening socket on 5353 as response may not come to the querying port
                         saddr->sin6_port = htons(MDNS_PORT);
-                        int lsock = mdns_socket_open_ipv6(saddr);
+                        int lsock = mdns_socket_open_ipv6(saddr, ifa->ifa_name);
                         if (lsock >= 0) {
                             listening_sockets[num_sockets++] = lsock;
                             log_addr = 1;
@@ -555,17 +579,7 @@ send_dns_sd(lxi_store_t lxistore, int timeout_user){
         error_printf("Failed to open any client sockets\n");
         return -1;
     }
-    
-    // Open additional sockets to receive multicast responses on 5353
-    //int num_lst_sockets = open_client_sockets(sockets, sizeof(sockets) / sizeof(sockets[0]), MDNS_PORT, lxistore.info, timeout_user, num_sockets);
-    //if (num_lst_sockets <= num_sockets) {
-    //    error_printf("Failed to open any listening sockets\n");
-    //    return -1;
-    //}
-    
-    //printf("Opened %d socket%s for DNS-SD\n", num_sockets, num_sockets > 1 ? "s" : "");
-    //printf("Sending DNS-SD discovery\n");
-    
+       
     for (int isock = 0; isock < num_sockets; ++isock) {
         if (mdns_discovery_send(sockets[isock])){
             error_printf("Failed to send DNS-DS discovery: %s\n", strerror(errno));
@@ -620,33 +634,6 @@ send_dns_sd(lxi_store_t lxistore, int timeout_user){
     for (int isock = 0; isock < num_sockets; ++isock)
         mdns_socket_close(sockets[isock]);
     
-    //printf("Closed socket%s\n", num_sockets ? "s" : "");
-    //printf("%d device(s) found.\n", lxistore.service_count);
-    //for (int i = 0; i < lxistore.service_count; ++i){
-    //    printf("Device name: %s on port %d - %s\n", lxistore.services[i].device_name, lxistore.services[i].service_port, lxistore.services[i].service_type);
-    //}
-    
-    for (int i = 0; i < lxistore.service_count; i++){
-        // Pretty print service type
-        char* service_type = "Unknown";
-        if (strstr(lxistore.services[i].service_type, "_lxi._tcp") != NULL)
-            service_type = "lxi";
-        else if (strstr(lxistore.services[i].service_type, "_vxi-11._tcp") != NULL)
-            service_type = "vxi-11";
-        else if (strstr(lxistore.services[i].service_type, "_scpi-raw._tcp") != NULL)
-            service_type = "scpi-raw";
-        else if (strstr(lxistore.services[i].service_type, "_scpi-telnet._tcp") != NULL)
-            service_type = "scpi-telnet";
-        else if (strstr(lxistore.services[i].service_type, "_hislip._tcp") != NULL)
-            service_type = "hislip";
-        char ipbuf[256];
-        char* str_name_end = strstr(lxistore.services[i].device_name, lxistore.services[i].service_type);
-        if (str_name_end != NULL){
-            lxistore.services[i].device_name[strlen(lxistore.services[i].device_name)-strlen(str_name_end) - 1] = 0;
-        }
-        ip_address_to_string(ipbuf, 256, lxistore.services[i].addr, lxistore.services[i].addrlen);
-        lxistore.info->service(ipbuf, lxistore.services[i].device_name, service_type, lxistore.services[i].service_port);
-    }
     return 0;
 }
 
@@ -674,5 +661,3 @@ int mdns_discover(lxi_info_t *info, int timeout){
     
     return 0;
 }
-
-
