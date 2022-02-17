@@ -21,13 +21,16 @@
 #endif
 
 #include <netinet/in.h>
-#include <net/if.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
+#include <pthread.h>
+
 #include "mdns.h"
 #include "lxi.h"
 #include "error.h"
 #include "sys/param.h"
+
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static char entrybuffer[256];
 static char namebuffer[256];
@@ -52,7 +55,6 @@ typedef struct {
     lxi_info_t* info;
     service_info_t services[MAX_SRV_COUNT];
     int service_count;
-    int response_received;
     int* sockets;
     int* listening_sockets;
 } lxi_store_t;
@@ -261,15 +263,18 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
                uint16_t query_id, uint16_t rtype, uint16_t rclass, uint32_t ttl, const void* data,
                size_t size, size_t name_offset, size_t name_length, size_t record_offset,
                size_t record_length, void* user_data) {
+    
     (void)sizeof(sock);
     (void)sizeof(query_id);
     (void)sizeof(name_length);
     (void)sizeof(user_data);
+    
+    pthread_mutex_lock(&mutex);
     lxi_store_t* lxistore = user_data;
     
     // Always reset namebuffer else string will contain content from the previous callback if shorter
     memset(namebuffer, 0, sizeof(namebuffer));
-    
+
     mdns_string_t entrystr = mdns_string_extract(data, size, &name_offset, entrybuffer, sizeof(entrybuffer));
 
     if ((rtype == MDNS_RECORDTYPE_PTR) && (entry == MDNS_ENTRYTYPE_ANSWER)) {
@@ -282,7 +287,7 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
             || (strstr((MDNS_STRING_FORMAT(namestr)), "_scpi-telnet._tcp") != NULL)
             || (strstr((MDNS_STRING_FORMAT(namestr)), "_hislip._tcp") != NULL)){
             
-            int service_id = get_service_id(lxistore, from, namestr);
+            int service_id = get_service_id(lxistore, from, entrystr);
             if (service_id < 0){
                 // A service was found
                 char* service_type;
@@ -308,6 +313,7 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
                 lxistore->services[lxistore->service_count].discovery_step = 0;
                 lxistore->service_count++;
                 
+                pthread_mutex_unlock(&mutex);
                 get_service_info(sock, (MDNS_STRING_FORMAT(namestr)), MDNS_RECORDTYPE_PTR, lxistore, lxistore->service_count - 1);
             }
             else if (strstr((MDNS_STRING_FORMAT(entrystr)), "_services") == NULL && (lxistore->services[service_id].discovery_step == 0)) {
@@ -318,6 +324,7 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
                 lxistore->services[service_id].discovery_step = 1;
                 
                 // Request for service information
+                pthread_mutex_unlock(&mutex);
                 get_service_info(sock, lxistore->services[service_id].device_name, MDNS_RECORDTYPE_SRV, lxistore, service_id);
             }
         }
@@ -336,6 +343,8 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
         };
     }
     
+    pthread_mutex_unlock(&mutex);
+
     return 0;
 }
 
