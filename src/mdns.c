@@ -25,7 +25,7 @@
 #include <ifaddrs.h>
 #include <pthread.h>
 
-#include "mdns_wrapper.h"
+#include "mdns.h"
 #include "lxi.h"
 #include "error.h"
 #include "sys/param.h"
