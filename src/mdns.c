@@ -129,7 +129,7 @@ static inline size_t
 str_in_data(const char* data, char* s_to_search, size_t data_len) {
     int pos_search = 0;
     int pos_text = 0;
-    int len_search = (int)strlen(s_to_search) - 1;
+    int len_search = (int)strlen(s_to_search);
     for (pos_text = 0; pos_text < data_len;++pos_text)
     {
         if((data[pos_text] == s_to_search[pos_search]))
