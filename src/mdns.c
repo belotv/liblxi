@@ -187,7 +187,7 @@ get_service_info(int sock, const char* qry_str, int type, lxi_store_t* lxistore,
     mdns_query_t query[1];
     int query_id;
     int res;
-    
+
     // Prepare the query
     query[0].name = qry_str;
     query[0].type = type;
@@ -209,8 +209,6 @@ get_service_info(int sock, const char* qry_str, int type, lxi_store_t* lxistore,
     if (query_id < 0)
         error_printf("Failed to send mDNS query: %s\n", strerror(errno));
     
-    sock = MAX(qry_sock, lst_sock);
-
     int initial_discovery_step = lxistore->services[service_id].discovery_step;
     do {
         struct timeval timeout;
@@ -220,15 +218,21 @@ get_service_info(int sock, const char* qry_str, int type, lxi_store_t* lxistore,
         
         fd_set readfs;
         FD_ZERO(&readfs);
+        
         FD_SET(qry_sock, &readfs);
         FD_SET(lst_sock, &readfs);
+
+        res = select(MAX(qry_sock, lst_sock)+1, &readfs, 0, 0, &timeout);
         
-        res = select(sock+1, &readfs, 0, 0, &timeout);
-        if (res > 0 && FD_ISSET(qry_sock, &readfs) && FD_ISSET(lst_sock, &readfs)){
-            mdns_query_recv(qry_sock, internal_buffer, internal_capacity, query_callback, lxistore, query_id);
-            mdns_query_recv(lst_sock, internal_buffer, internal_capacity, query_callback, lxistore, query_id);
+        if (res > 0){
+            if (FD_ISSET(qry_sock, &readfs)){
+                mdns_query_recv(qry_sock, internal_buffer, internal_capacity, query_callback, lxistore, query_id);
+            }
+            if (FD_ISSET(lst_sock, &readfs)){
+                mdns_query_recv(lst_sock, internal_buffer, internal_capacity, query_callback, lxistore, query_id);
+            }
         }
-    } while (res > 0 && (lxistore->services[service_id].discovery_step < initial_discovery_step));
+    } while (res > 0 && (lxistore->services[service_id].discovery_step <= initial_discovery_step));
     if (res == 0){
         error_printf("Timeout while retrieving service information\n");
     }
