@@ -25,7 +25,7 @@
 #include <ifaddrs.h>
 #include <pthread.h>
 
-#include "mdns.h"
+#include "mdns_wrapper.h"
 #include "lxi.h"
 #include "error.h"
 #include "sys/param.h"
@@ -244,10 +244,10 @@ get_service_info(int sock, const char* qry_str, int type, lxi_store_t* lxistore,
 }
 
 static int
-get_service_id(lxi_store_t* lxistore, const struct sockaddr* from, mdns_string_t name)
+get_service_id(lxi_store_t* lxistore, const struct sockaddr* from, const char* lookup)
 {
     for (int i = 0; i < lxistore->service_count; i++){
-        if (str_in_data((MDNS_STRING_FORMAT(name)), lxistore->services[i].service_type, strlen((MDNS_STRING_FORMAT(name)))))
+        if (str_in_data(lookup, lxistore->services[i].service_type, strlen(lookup)))
             continue;
         if (lxistore->services[i].addr->sa_family == AF_INET && (((const struct sockaddr_in*)from)->sin_addr.s_addr == ((const struct sockaddr_in*)lxistore->services[i].addr)->sin_addr.s_addr))
             return i;
@@ -287,20 +287,21 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
             || (strstr((MDNS_STRING_FORMAT(namestr)), "_scpi-telnet._tcp") != NULL)
             || (strstr((MDNS_STRING_FORMAT(namestr)), "_hislip._tcp") != NULL)){
             
-            int service_id = get_service_id(lxistore, from, entrystr);
+            // A service was found
+            char* service_type;
+            if (strstr((MDNS_STRING_FORMAT(namestr)), "_lxi._tcp") != NULL)
+                service_type = "_lxi._tcp";
+            else if (strstr((MDNS_STRING_FORMAT(namestr)), "_vxi-11._tcp") != NULL)
+                service_type = "_vxi-11._tcp";
+            else if (strstr((MDNS_STRING_FORMAT(namestr)), "_scpi-raw._tcp") != NULL)
+                service_type = "_scpi-raw._tcp";
+            else if (strstr((MDNS_STRING_FORMAT(namestr)), "_scpi-telnet._tcp") != NULL)
+                service_type = "_scpi-telnet._tcp";
+            else if (strstr((MDNS_STRING_FORMAT(namestr)), "_hislip._tcp") != NULL)
+                service_type = "_hislip._tcp";
+            
+            int service_id = get_service_id(lxistore, from, service_type);
             if (service_id < 0){
-                // A service was found
-                char* service_type;
-                if (strstr((MDNS_STRING_FORMAT(namestr)), "_lxi._tcp") != NULL)
-                    service_type = "_lxi._tcp";
-                else if (strstr((MDNS_STRING_FORMAT(namestr)), "_vxi-11._tcp") != NULL)
-                    service_type = "_vxi-11._tcp";
-                else if (strstr((MDNS_STRING_FORMAT(namestr)), "_scpi-raw._tcp") != NULL)
-                    service_type = "_scpi-raw._tcp";
-                else if (strstr((MDNS_STRING_FORMAT(namestr)), "_scpi-telnet._tcp") != NULL)
-                    service_type = "_scpi-telnet._tcp";
-                else if (strstr((MDNS_STRING_FORMAT(namestr)), "_hislip._tcp") != NULL)
-                    service_type = "_hislip._tcp";
                 
                 // Store service in LXI store
                 strncpy(lxistore->services[lxistore->service_count].service_type, service_type, strlen(service_type));
@@ -333,7 +334,7 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry
     else if (rtype == MDNS_RECORDTYPE_SRV && lxistore->service_count) {
         // Receive SRV record - parse to get some service information
         mdns_record_srv_t srv = mdns_record_parse_srv(data, size, record_offset, record_length, namebuffer, sizeof(namebuffer));
-        int service_id = get_service_id(lxistore, from, entrystr);
+        int service_id = get_service_id(lxistore, from, (MDNS_STRING_FORMAT(entrystr)));
     
         // SRV matches with a service found previously, service is now fully discovered
         if (service_id >= 0 && (lxistore->services[service_id].discovery_step == 1)){
